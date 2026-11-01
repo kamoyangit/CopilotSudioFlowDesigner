@@ -255,13 +255,6 @@ if st.session_state.result:
         )
 
     with tab_detail:
-        node_names = {
-            node["id"]: node["name"] for node in data["nodes"]
-        }
-        outgoing = {}
-        for edge in data["edges"]:
-            outgoing.setdefault(edge.get("from"), []).append(edge)
-
         for index, node in enumerate(data["nodes"], start=1):
             st.markdown(
                 f"### {index}. {_escape_markdown(node['name'])}"
@@ -278,17 +271,6 @@ if st.session_state.result:
                     f"- **{_escape_markdown(param['name'])}**: "
                     f"{_escape_markdown(param['value'])}"
                 )
-            branches = outgoing.get(node["id"], [])
-            if branches:
-                st.markdown("**分岐先**")
-                for edge in branches:
-                    target_id = str(edge.get("to") or "")
-                    target_name = node_names.get(target_id, target_id)
-                    branch_label = str(edge.get("label") or "線形")
-                    st.markdown(
-                        f"- {_escape_markdown(branch_label)} → "
-                        f"{_escape_markdown(target_name)} ({_escape_markdown(target_id)})"
-                    )
             supports_prompt = node.get(
                 "supports_prompt",
                 node["type"]

@@ -105,13 +105,6 @@ python3.11 -m venv .venv
 
 生成時は、パラメータに処理手順を書かず、条件・分岐・終了・変数への代入・エラー処理を独立したノードにします。メール分類＋通知では、トリガー → 前処理・除外 → 重複チェック → ログ作成（全件共通）→ 分類 → 苦情のみ Teams 投稿 → 失敗時の代替通知、という構造を目安にしてください。
 
-- 式は Power Automate 式（`concat` / `variables` / `triggerOutputs` / `char(10)` / `min` / `length` / `substring`）に統一します。HTML本文は「HTMLからテキスト」で変換します。
-- 変数は最初に `set_variable` で初期化します。通知状態は分岐前に「通知不要」で初期化します。
-- Teams 投稿は Try、代替通知は Catch とし、`実行条件（Run after）` で失敗／タイムアウト時のみ実行します。`statusCode` や成功フラグによる通常の後続判定は行いません。
-- SharePoint のフィルターは内部名（例: `MessageID`）を使い、サイト名・リスト名を取得／作成／更新で統一します。項目の作成では `Title＝件名` を必須にします。
-- Teams 投稿本文には、件名・差出人・受信日時・メッセージID・分類・本文抜粋（先頭300文字）を含めます。
-- ノード詳細には各ノードの分岐先を表示します。
-
 ## 参照ドキュメント
 
 - Microsoft Learn: <https://learn.microsoft.com/ja-jp/microsoft-copilot-studio/>

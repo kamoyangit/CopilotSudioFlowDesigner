@@ -947,10 +947,7 @@ def validate_flow(data: dict) -> list:
         for n in workflow_actions
         if "SharePoint" in _node_params_text(n)
         and any(k in _node_params_text(n) for k in ("取得", "検索"))
-        and (
-            "メッセージ" in _node_params_text(n)
-            or "MessageID" in _node_params_text(n)
-        )
+        and "メッセージ" in _node_params_text(n)
         and "ID" in _node_params_text(n)
     ]
     log_nodes = [
@@ -959,11 +956,7 @@ def validate_flow(data: dict) -> list:
         if "SharePoint" in _node_params_text(n)
         and any(
             k in _node_params_text(n)
-            for k in ("項目の作成", "レコードの作成")
-        )
-        and not any(
-            k in _node_params_text(n)
-            for k in ("項目の更新", "レコードの更新")
+            for k in ("項目の作成", "レコードの作成", "作成")
         )
         and any(
             k in _node_params_text(n)
@@ -977,60 +970,14 @@ def validate_flow(data: dict) -> list:
         any(k in text for k in ("重複", "件数", "exists", "1件以上"))
         for text in condition_texts
     )
-    status_code_conditions = [
-        n
-        for n in nodes
-        if n.get("type") in CONDITION_TYPES
-        and any(
-            k in _node_text(n)
-            for k in ("statusCode", "StatusCode", "status code", "成功フラグ", "200")
-        )
-    ]
-    set_variable_nodes = [
-        n for n in nodes if n.get("type") == "set_variable"
-    ]
-    status_initialized = any(
-        (
-            "通知状態" in _node_params_text(n)
-            or "NotificationStatus" in _node_params_text(n)
-        )
-        and any(
-            k in _node_params_text(n)
-            for k in ("通知不要", "初期化")
-        )
-        for n in set_variable_nodes
+    has_failure_condition = any(
+        any(k in text for k in ("失敗", "成功", "実行結果", "エラー"))
+        for text in condition_texts
     )
-    teams_has_try = any(
-        "Try" in _node_params_text(n)
-        and any(
-            k in _node_params_text(n)
-            for k in ("スコープ", "Scope")
-        )
-        for n in teams_actions
-    )
-    catch_actions = [
-        n
-        for n in alternative_actions
-        if "Catch" in _node_params_text(n)
-        and any(
-            k in _node_params_text(n)
-            for k in ("失敗", "タイムアウト", "Run after")
-        )
-    ]
-    final_updates = [
-        n
-        for n in workflow_actions
-        if "項目の更新" in _node_params_text(n)
-        and any(
-            k in _node_params_text(n)
-            for k in ("Try 成功", "Catch 成功", "Try/Catch", "両方")
-        )
-    ]
 
     notification_warnings = []
     for node in teams_actions:
         text = _node_text(node)
-        params_text = _node_params_text(node)
         if any(k in text for k in ("投稿ID", "成功フラグ")) and not any(
             k in text for k in ("使わない", "返さない", "なし", "不要", "前提にしない")
         ):
@@ -1065,73 +1012,21 @@ def validate_flow(data: dict) -> list:
                 f"{_node_label(node)}: 再試行はアクションの設定（Settings）に"
                 "記述する"
             )
-        teams_format_keys = ["件名", "差出人", "受信日時", "本文抜粋"]
-        missing_format = [
-            key for key in teams_format_keys if key not in params_text
-        ]
-        if not (
-            "メッセージID" in params_text
-            or "MessageID" in params_text
-        ):
-            missing_format.append("メッセージID")
-        if missing_format:
-            notification_warnings.append(
-                f"{_node_label(node)}: Teams 投稿の固定フォーマットに"
-                f"{', '.join(missing_format)} を追加"
-            )
 
     if teams_actions:
         if not duplicate_nodes or not has_duplicate_condition:
             notification_warnings.append(
-                "重複チェック: SharePoint「項目の取得」で内部名 MessageID を検索し、"
+                "重複チェック: SharePoint「項目の取得」でメッセージIDを検索し、"
                 "condition で1件以上なら終了する独立ノードを追加"
             )
-        for node in duplicate_nodes:
-            params_text = _node_params_text(node)
-            if "メッセージID" in params_text and "MessageID" not in params_text:
-                notification_warnings.append(
-                    f"{_node_label(node)}: SharePoint のフィルターは表示名"
-                    "「メッセージID」ではなく内部名 MessageID を使う"
-                )
         if not alternative_actions:
             notification_warnings.append(
                 "代替通知: Outlook「メールの送信」を独立した workflow_action で追加"
             )
-        if not teams_has_try:
+        if not has_failure_condition:
             notification_warnings.append(
-                "Teams 投稿を Try スコープに入れ、実行条件（Run after）を設定する"
+                "投稿の成否: Teams 投稿の後に condition で成功／失敗を分岐"
             )
-        if not catch_actions:
-            notification_warnings.append(
-                "Catch: Teams 投稿が失敗／タイムアウトした時のみ実行する"
-                "Outlook 代替通知を追加"
-            )
-        if not final_updates:
-            notification_warnings.append(
-                "最後の SharePoint「項目の更新」は Try 成功または Catch 成功後に"
-                "実行する"
-            )
-        if not status_initialized:
-            notification_warnings.append(
-                "通知状態を分岐前に set_variable で「通知不要」に初期化する"
-            )
-        if status_code_conditions:
-            notification_warnings.append(
-                "statusCode／成功フラグによる成否判定は、Teams 投稿失敗時に"
-                "後続が実行されないため使わない。Try/Catch の Run after を使う"
-            )
-        sharepoint_actions = [
-            n
-            for n in workflow_actions
-            if "SharePoint" in _node_params_text(n)
-        ]
-        for node in sharepoint_actions:
-            params_text = _node_params_text(node)
-            if "サイト" not in params_text or "リスト" not in params_text:
-                notification_warnings.append(
-                    f"{_node_label(node)}: SharePoint のサイト名・リスト名を"
-                    "取得／作成／更新で統一して明記"
-                )
         if notification_warnings:
             checks.append(
                 CheckResult(
@@ -1148,41 +1043,13 @@ def validate_flow(data: dict) -> list:
                     "通知",
                     "通知の運用",
                     "pass",
-                    "重複チェック・再試行設定・Try/Catch・代替通知・"
-                    "成否後の更新が独立ノード／設定として設計されています。",
+                    "重複チェック・再試行設定・代替通知・成否分岐が"
+                    "独立ノード／設定として設計されています。",
                 )
             )
 
     if classify_nodes and workflow_triggers:
-        log_warnings = []
-        if not log_nodes:
-            log_warnings.append(
-                "分類の前に、SharePoint「項目の作成」で受信日時・差出人・"
-                "件名・分類ラベル・メッセージID・通知状態を記録する"
-                "ログ作成ノードを1回だけ追加"
-            )
-        else:
-            for node in log_nodes:
-                params_text = _node_params_text(node)
-                if "Title" not in params_text:
-                    log_warnings.append(
-                        f"{_node_label(node)}: SharePoint の Title＝件名を追加"
-                    )
-                if "受信日時" not in params_text or "差出人" not in params_text:
-                    log_warnings.append(
-                        f"{_node_label(node)}: 受信日時・差出人をログ項目に追加"
-                    )
-        if log_warnings:
-            checks.append(
-                CheckResult(
-                    "通知",
-                    "ログ作成（全件共通）",
-                    "warn",
-                    "; ".join(log_warnings),
-                    required=False,
-                )
-            )
-        else:
+        if log_nodes:
             checks.append(
                 CheckResult(
                     "通知",
@@ -1190,6 +1057,18 @@ def validate_flow(data: dict) -> list:
                     "pass",
                     "SharePoint の作成アクションが全件共通のログとして"
                     "配置されています。",
+                )
+            )
+        else:
+            checks.append(
+                CheckResult(
+                    "通知",
+                    "ログ作成（全件共通）",
+                    "warn",
+                    "分類の前に、SharePoint「項目の作成」で受信日時・差出人・"
+                    "件名・分類ラベル・メッセージID・通知状態を記録する"
+                    "ログ作成ノードを1回だけ追加",
+                    required=False,
                 )
             )
 
@@ -1511,83 +1390,6 @@ def validate_flow(data: dict) -> list:
                 "ノード固有の指示プロンプトがあります。",
             )
         )
-
-    action_nodes = [
-        n for n in nodes if n.get("type") == "workflow_action"
-    ]
-    if action_nodes:
-        action_prompt_warnings = []
-        seen_prompts = {}
-        for node in action_nodes:
-            prompt = str(node.get("prompt") or "").strip()
-            seen_prompts.setdefault(prompt, []).append(node)
-            params_text = _node_params_text(node)
-            if "Teams" in prompt and "Teams" not in params_text:
-                action_prompt_warnings.append(
-                    f"{_node_label(node)}: Teams 投稿のプロンプトが"
-                    "他アクションにコピーされている可能性"
-                )
-        for prompt, group in seen_prompts.items():
-            if prompt and len(group) > 1:
-                action_prompt_warnings.append(
-                    "同一の指示プロンプト: "
-                    + ", ".join(_node_label(n) for n in group)
-                )
-        if action_prompt_warnings:
-            checks.append(
-                CheckResult(
-                    "プロンプト",
-                    "アクションの指示プロンプト",
-                    "warn",
-                    "; ".join(action_prompt_warnings),
-                    required=False,
-                )
-            )
-        else:
-            checks.append(
-                CheckResult(
-                    "プロンプト",
-                    "アクションの指示プロンプト",
-                    "pass",
-                    "アクションごとに個別の指示プロンプトがあります。",
-                )
-            )
-
-    set_variable_nodes = [
-        n for n in nodes if n.get("type") == "set_variable"
-    ]
-    if set_variable_nodes:
-        expression_warnings = []
-        for node in set_variable_nodes:
-            text = _node_params_text(node)
-            if "PlainText(" in text or " & " in text:
-                expression_warnings.append(
-                    f"{_node_label(node)}: Power Automate 式に統一"
-                    "（concat / variables / char(10)）"
-                )
-            if "\\n" in text:
-                expression_warnings.append(
-                    f"{_node_label(node)}: 改行は char(10) に統一"
-                )
-        if expression_warnings:
-            checks.append(
-                CheckResult(
-                    "パラメータ",
-                    "式の統一",
-                    "warn",
-                    "; ".join(expression_warnings),
-                    required=False,
-                )
-            )
-        else:
-            checks.append(
-                CheckResult(
-                    "パラメータ",
-                    "式の統一",
-                    "pass",
-                    "Power Automate 式と char(10) に統一されています。",
-                )
-            )
 
     trigger_prompts = [
         _node_label(n)
