@@ -1,0 +1,13 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+.python-version
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+.pdf-text.tmp
+.pdf-text-nfkc.tmp
+microsoft-copilot-studio.pdf
