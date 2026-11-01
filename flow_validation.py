@@ -34,19 +34,16 @@ MIN_PARAMS = {
     "request_info": 4,
 }
 
-# ノード種別ごとのハーネス。agent_node は両方で使えるため含めない。
+# ノード種別ごとのハーネス。共通ノード（condition / condition_group /
+# set_variable / end_conversation / agent_node）はハーネスを固定しないため含めない。
 HARNESS_BY_TYPE = {
     "topic_trigger": "topic",
     "message": "topic",
     "question": "topic",
     "adaptive_card": "topic",
-    "condition": "topic",
-    "condition_group": "topic",
-    "set_variable": "topic",
     "http_request": "topic",
     "generative_answers": "topic",
     "redirect": "topic",
-    "end_conversation": "topic",
     "call_action": "topic",
     "flow_trigger": "agent_flow",
     "prompt_node": "agent_flow",
@@ -88,15 +85,6 @@ FALSE_LABEL_HINTS = (
     "承認不可",
     "非承認",
 )
-DEFAULT_LABEL_HINTS = (
-    "デフォルト",
-    "default",
-    "その他",
-    "未分類",
-    "要確認",
-)
-
-
 @dataclass(frozen=True)
 class CheckResult:
     category: str
@@ -110,6 +98,22 @@ def _node_label(node: dict) -> str:
     name = node.get("name") or node.get("type") or "不明"
     node_id = node.get("id") or "-"
     return f"{name} ({node_id})"
+
+
+def _node_params_text(node: dict) -> str:
+    """パラメータ名・値だけをまとめた検索用テキスト."""
+    params = node.get("parameters")
+    params = params if isinstance(params, list) else []
+    return " ".join(
+        f"{p.get('name', '')} {p.get('value', '')}"
+        for p in params
+        if isinstance(p, dict)
+    )
+
+
+def _node_text(node: dict) -> str:
+    """パラメータ名・値・指示プロンプトをまとめた検索用テキスト."""
+    return _node_params_text(node) + " " + str(node.get("prompt") or "")
 
 
 def _outgoing_edges(edges: list) -> dict:
@@ -174,12 +178,6 @@ def _contains_marker(text: str, markers: tuple) -> bool:
         elif marker in text:
             return True
     return False
-
-
-def _labels_match_hints(labels: list, hints: tuple) -> bool:
-    return any(
-        _contains_marker(str(label or "").lower(), hints) for label in labels
-    )
 
 
 def _branch_label_kind(label) -> str | None:
@@ -473,7 +471,7 @@ def validate_flow(data: dict) -> list:
     has_end_node = any(n.get("type") == "end_conversation" for n in nodes)
     if has_end_node:
         checks.append(
-            CheckResult("構造", "終了処理", "pass", "会話の終了ノードがあります。")
+            CheckResult("構造", "終了処理", "pass", "終了ノードがあります。")
         )
     elif terminal_nodes:
         checks.append(
@@ -619,7 +617,7 @@ def validate_flow(data: dict) -> list:
     classify_nodes = [n for n in nodes if n.get("type") == "classify_node"]
     if classify_nodes:
         classify_issues = []
-        classify_warnings = []
+        classify_label_warnings = []
         for node in classify_nodes:
             branches = outgoing.get(node.get("id"), [])
             if len(branches) < 2:
@@ -627,11 +625,26 @@ def validate_flow(data: dict) -> list:
                     f"{_node_label(node)}: {len(branches)} 本"
                 )
                 continue
-            labels = [e.get("label") for e in branches]
-            if not _labels_match_hints(labels, DEFAULT_LABEL_HINTS):
-                classify_warnings.append(
-                    f"{_node_label(node)}: デフォルト分岐のラベルを確認"
+            labels = [
+                str(e.get("label") or "").strip()
+                for e in branches
+            ]
+            if any(not label for label in labels):
+                classify_label_warnings.append(
+                    f"{_node_label(node)}: 空の分岐ラベルがあります"
                 )
+            joined_labels = " ".join(labels)
+            if "苦情" in joined_labels:
+                missing = [
+                    category
+                    for category in ("問い合わせ", "営業", "要確認")
+                    if category not in joined_labels
+                ]
+                if missing:
+                    classify_label_warnings.append(
+                        f"{_node_label(node)}: カテゴリ分岐が不足"
+                        f"（{', '.join(missing)}）"
+                    )
 
         if classify_issues:
             checks.append(
@@ -652,13 +665,13 @@ def validate_flow(data: dict) -> list:
                 )
             )
 
-        if classify_warnings:
+        if classify_label_warnings:
             checks.append(
                 CheckResult(
                     "分岐",
-                    "分類ノードのデフォルト",
+                    "分類カテゴリの分岐",
                     "warn",
-                    "; ".join(classify_warnings),
+                    "; ".join(classify_label_warnings),
                     required=False,
                 )
             )
@@ -666,9 +679,9 @@ def validate_flow(data: dict) -> list:
             checks.append(
                 CheckResult(
                     "分岐",
-                    "分類ノードのデフォルト",
+                    "分類カテゴリの分岐",
                     "pass",
-                    "分類ノードにデフォルト分岐のラベルがあります。",
+                    "分類カテゴリごとの分岐ラベルがあります。",
                 )
             )
 
@@ -686,7 +699,7 @@ def validate_flow(data: dict) -> list:
 
     if classify_nodes:
         classify_param_warnings = []
-        default_category_warnings = []
+        classify_rule_warnings = []
         for node in classify_nodes:
             params = node.get("parameters")
             params = params if isinstance(params, list) else []
@@ -706,21 +719,39 @@ def validate_flow(data: dict) -> list:
                     f"{_node_label(node)}: 分岐先は設定項目ではなく"
                     "キャンバス上の接続"
                 )
-            default_values = [
-                str(p.get("value") or "")
-                for p in params
-                if isinstance(p, dict)
-                and (
-                    "デフォルト" in str(p.get("name") or "")
-                    or "default" in str(p.get("name") or "").lower()
-                )
-            ]
-            if any("問い合わせ" in value for value in default_values) and any(
-                key in text for key in ("苦情", "クレーム")
+            if any(
+                "デフォルト" in name or "default" in name.lower()
+                for name in names
             ):
-                default_category_warnings.append(
-                    f"{_node_label(node)}: 迷った場合に苦情を見逃さないよう、"
-                    "苦情寄りまたは「要確認」カテゴリを検討"
+                classify_rule_warnings.append(
+                    f"{_node_label(node)}: デフォルトカテゴリを設定せず、"
+                    "根拠に基づく判定ルールでカテゴリを決める"
+                )
+            output_ok = any(
+                ("出力" in name or "output" in name.lower())
+                and (
+                    "category" in value.lower()
+                    or "カテゴリ" in value
+                )
+                for name, value in zip(names, values)
+            )
+            if not output_ok:
+                classify_rule_warnings.append(
+                    f"{_node_label(node)}: 出力変数 Category を明示"
+                )
+            input_ok = "分類用" in text or (
+                "件名" in text and "本文" in text
+            )
+            if not input_ok:
+                classify_rule_warnings.append(
+                    f"{_node_label(node)}: 入力は前処理済みの分類用入力"
+                    "（件名＋本文テキスト）を使う"
+                )
+            if not ("根拠" in text and "苦情" in text):
+                classify_rule_warnings.append(
+                    f"{_node_label(node)}: 判定ルールに「根拠が1つでもあれば"
+                    "苦情、単なる質問は問い合わせ、売り込みは営業、"
+                    "根拠がなければ要確認」を明記"
                 )
 
         if classify_param_warnings:
@@ -743,13 +774,13 @@ def validate_flow(data: dict) -> list:
                 )
             )
 
-        if default_category_warnings:
+        if classify_rule_warnings:
             checks.append(
                 CheckResult(
                     "分類",
-                    "デフォルトカテゴリのリスク",
+                    "分類の判定ルール",
                     "warn",
-                    "; ".join(default_category_warnings),
+                    "; ".join(classify_rule_warnings),
                     required=False,
                 )
             )
@@ -757,9 +788,10 @@ def validate_flow(data: dict) -> list:
             checks.append(
                 CheckResult(
                     "分類",
-                    "デフォルトカテゴリのリスク",
+                    "分類の判定ルール",
                     "pass",
-                    "デフォルトカテゴリによる見逃しリスクは検出されませんでした。",
+                    "デフォルトカテゴリを使わず、根拠に基づく判定ルールが"
+                    "記述されています。",
                 )
             )
 
@@ -812,6 +844,32 @@ def validate_flow(data: dict) -> list:
     if workflow_triggers:
         email_filter_warnings = []
         email_trigger_count = 0
+        condition_nodes = [
+            n for n in nodes if n.get("type") in CONDITION_TYPES
+        ]
+        condition_text = " ".join(
+            f"{p.get('name', '')} {p.get('value', '')}"
+            for condition_node in condition_nodes
+            for p in (
+                condition_node.get("parameters")
+                if isinstance(condition_node.get("parameters"), list)
+                else []
+            )
+            if isinstance(p, dict)
+        )
+        condition_text += " " + " ".join(
+            str(n.get("prompt") or "") for n in condition_nodes
+        )
+        has_exclusion_node = any(
+            key in condition_text
+            for key in (
+                "自動返信",
+                "Auto-Reply",
+                "配信停止",
+                "unsubscribe",
+                "除外",
+            )
+        )
         for node in workflow_triggers:
             params = node.get("parameters")
             params = params if isinstance(params, list) else []
@@ -829,14 +887,22 @@ def validate_flow(data: dict) -> list:
             if not is_email:
                 continue
             email_trigger_count += 1
-            has_filter = any(
-                key in text
-                for key in ("フォルダ", "自動返信", "配信停止", "自分宛て", "受信条件")
+            attachment_terms = (
+                "添付ファイルを含める",
+                "添付ファイルがある場合のみ",
+                "添付なし",
+                "PDFのみ",
+                "PDF のみ",
             )
-            if not has_filter:
+            if any(term in text for term in attachment_terms):
                 email_filter_warnings.append(
-                    f"{_node_label(node)}: フォルダ指定・自動返信/配信停止の除外・"
-                    "自分宛て以外の除外を追加"
+                    f"{_node_label(node)}: トリガーに添付条件を設定しない。"
+                    "本文分類だけなら添付条件は不要"
+                )
+            if not has_exclusion_node:
+                email_filter_warnings.append(
+                    f"{_node_label(node)}: 自動返信・配信停止などの除外条件を"
+                    "独立した condition / condition_group で設計"
                 )
 
         if email_trigger_count:
@@ -844,7 +910,7 @@ def validate_flow(data: dict) -> list:
                 checks.append(
                     CheckResult(
                         "通知",
-                        "受信メールの絞り込み",
+                        "受信メールの除外条件",
                         "warn",
                         "; ".join(email_filter_warnings),
                         required=False,
@@ -854,39 +920,113 @@ def validate_flow(data: dict) -> list:
                 checks.append(
                     CheckResult(
                         "通知",
-                        "受信メールの絞り込み",
+                        "受信メールの除外条件",
                         "pass",
-                        "受信条件の絞り込みが記述されています。",
+                        "トリガーに添付条件を置かず、除外条件を独立ノードで"
+                        "設計しています。",
                     )
                 )
 
-    teams_actions = []
-    notification_warnings = []
-    for node in workflow_actions:
-        params = node.get("parameters")
-        params = params if isinstance(params, list) else []
-        text = " ".join(
-            f"{p.get('name', '')} {p.get('value', '')}"
-            for p in params
-            if isinstance(p, dict)
+    teams_actions = [
+        n
+        for n in workflow_actions
+        if "Teams" in _node_params_text(n)
+        and any(k in _node_params_text(n) for k in ("投稿", "メッセージ"))
+        and "Outlook" not in _node_params_text(n)
+        and "メールの送信" not in _node_params_text(n)
+    ]
+    alternative_actions = [
+        n
+        for n in workflow_actions
+        if "Outlook" in _node_params_text(n)
+        and "メール" in _node_params_text(n)
+        and any(k in _node_params_text(n) for k in ("送信", "代替通知"))
+    ]
+    duplicate_nodes = [
+        n
+        for n in workflow_actions
+        if "SharePoint" in _node_params_text(n)
+        and any(k in _node_params_text(n) for k in ("取得", "検索"))
+        and "メッセージ" in _node_params_text(n)
+        and "ID" in _node_params_text(n)
+    ]
+    log_nodes = [
+        n
+        for n in workflow_actions
+        if "SharePoint" in _node_params_text(n)
+        and any(
+            k in _node_params_text(n)
+            for k in ("項目の作成", "レコードの作成", "作成")
         )
-        text += " " + str(node.get("prompt") or "")
-        if any(k in text for k in ("Teams", "投稿", "通知")):
-            teams_actions.append(node)
-            if not any(
-                k in text for k in ("重複", "メッセージID", "既通知")
-            ):
-                notification_warnings.append(
-                    f"{_node_label(node)}: 二重通知防止を設計"
-                )
-            if not any(
-                k in text for k in ("再試行", "代替通知", "失敗時")
-            ):
-                notification_warnings.append(
-                    f"{_node_label(node)}: 投稿失敗時の再試行/代替通知を設計"
-                )
+        and any(
+            k in _node_params_text(n)
+            for k in ("通知状態", "分類", "メッセージ")
+        )
+    ]
+    condition_texts = [
+        _node_text(n) for n in nodes if n.get("type") in CONDITION_TYPES
+    ]
+    has_duplicate_condition = any(
+        any(k in text for k in ("重複", "件数", "exists", "1件以上"))
+        for text in condition_texts
+    )
+    has_failure_condition = any(
+        any(k in text for k in ("失敗", "成功", "実行結果", "エラー"))
+        for text in condition_texts
+    )
+
+    notification_warnings = []
+    for node in teams_actions:
+        text = _node_text(node)
+        if any(k in text for k in ("投稿ID", "成功フラグ")) and not any(
+            k in text for k in ("使わない", "返さない", "なし", "不要", "前提にしない")
+        ):
+            notification_warnings.append(
+                f"{_node_label(node)}: Teams 投稿は投稿IDや成功フラグを返さない。"
+                "通知状態は後続の変数設定・項目更新で管理"
+            )
+        if "二重通知防止" in text:
+            notification_warnings.append(
+                f"{_node_label(node)}: 二重通知防止は Teams のパラメータではなく、"
+                "SharePoint 検索＋条件の独立ノードで行う"
+            )
+        has_retry_setting = any(
+            isinstance(p, dict)
+            and (
+                "設定" in str(p.get("name") or "")
+                or "settings" in str(p.get("name") or "").lower()
+            )
+            and (
+                "再試行" in str(p.get("name") or "")
+                or "再試行" in str(p.get("value") or "")
+                or "retry" in str(p.get("value") or "").lower()
+            )
+            for p in (
+                node.get("parameters")
+                if isinstance(node.get("parameters"), list)
+                else []
+            )
+        )
+        if not has_retry_setting:
+            notification_warnings.append(
+                f"{_node_label(node)}: 再試行はアクションの設定（Settings）に"
+                "記述する"
+            )
 
     if teams_actions:
+        if not duplicate_nodes or not has_duplicate_condition:
+            notification_warnings.append(
+                "重複チェック: SharePoint「項目の取得」でメッセージIDを検索し、"
+                "condition で1件以上なら終了する独立ノードを追加"
+            )
+        if not alternative_actions:
+            notification_warnings.append(
+                "代替通知: Outlook「メールの送信」を独立した workflow_action で追加"
+            )
+        if not has_failure_condition:
+            notification_warnings.append(
+                "投稿の成否: Teams 投稿の後に condition で成功／失敗を分岐"
+            )
         if notification_warnings:
             checks.append(
                 CheckResult(
@@ -903,7 +1043,32 @@ def validate_flow(data: dict) -> list:
                     "通知",
                     "通知の運用",
                     "pass",
-                    "二重通知防止と失敗時の扱いが記述されています。",
+                    "重複チェック・再試行設定・代替通知・成否分岐が"
+                    "独立ノード／設定として設計されています。",
+                )
+            )
+
+    if classify_nodes and workflow_triggers:
+        if log_nodes:
+            checks.append(
+                CheckResult(
+                    "通知",
+                    "ログ作成（全件共通）",
+                    "pass",
+                    "SharePoint の作成アクションが全件共通のログとして"
+                    "配置されています。",
+                )
+            )
+        else:
+            checks.append(
+                CheckResult(
+                    "通知",
+                    "ログ作成（全件共通）",
+                    "warn",
+                    "分類の前に、SharePoint「項目の作成」で受信日時・差出人・"
+                    "件名・分類ラベル・メッセージID・通知状態を記録する"
+                    "ログ作成ノードを1回だけ追加",
+                    required=False,
                 )
             )
 
@@ -1171,7 +1336,10 @@ def validate_flow(data: dict) -> list:
 
     # ------------------------------------------------------------ プロンプト・ラベル
     prompt_nodes = [
-        n for n in nodes if n.get("type") not in TRIGGER_TYPES
+        n
+        for n in nodes
+        if n.get("type") not in TRIGGER_TYPES
+        and n.get("supports_prompt", True)
     ]
     empty_prompts = [
         _node_label(n)
@@ -1193,7 +1361,7 @@ def validate_flow(data: dict) -> list:
                 "プロンプト",
                 "指示プロンプト",
                 "pass",
-                "トリガーを除くすべてのノードに指示プロンプトがあります。",
+                "指示プロンプトが必要なノードにプロンプトがあります。",
             )
         )
 

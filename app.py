@@ -281,8 +281,17 @@ if st.session_state.result:
                     "**指示プロンプト例**: "
                     f"{_escape_markdown(node['prompt'])}"
                 )
-            else:
+            elif node["type"] in {
+                "topic_trigger",
+                "flow_trigger",
+                "workflow_trigger",
+            }:
                 st.markdown("**指示プロンプト**: トリガーには設定しません。")
+            else:
+                st.markdown(
+                    "**指示プロンプト**: 条件・終了・変数設定は "
+                    "parameters と next で表現するため設定しません。"
+                )
             st.divider()
 
     with tab_validation:
